@@ -123,6 +123,44 @@ class BinanceClient:
         )
         return self._signed_post("/fapi/v1/order", params)
 
+    def place_stop_limit_order(
+        self, symbol: str, side: str, quantity: float, price: float, stop_price: float
+    ) -> dict[str, Any]:
+        """
+        Place a STOP (Stop-Limit) order on Binance Futures Testnet.
+
+        The order is queued until ``stop_price`` is reached, at which point
+        a LIMIT order is placed at ``price``.
+
+        Args:
+            symbol: Trading pair symbol (e.g. ``BTCUSDT``).
+            side: ``BUY`` or ``SELL``.
+            quantity: Quantity to trade.
+            price: Limit price executed once the stop is triggered.
+            stop_price: Trigger price that activates the limit order.
+
+        Returns:
+            Raw response dict from the Binance API.
+        """
+        params: dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "side": side.upper(),
+            "type": "STOP",
+            "quantity": quantity,
+            "price": price,
+            "stopPrice": stop_price,
+            "timeInForce": "GTC",
+        }
+        logger.info(
+            "Placing STOP order | symbol=%s side=%s quantity=%s price=%s stopPrice=%s",
+            symbol,
+            side,
+            quantity,
+            price,
+            stop_price,
+        )
+        return self._signed_post("/fapi/v1/order", params)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

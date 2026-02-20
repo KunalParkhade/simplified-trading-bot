@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 
 from bot.client import BinanceAPIError, BinanceClient
 from bot.logging_config import setup_logging
-from bot.orders import execute_limit_order, execute_market_order
+from bot.orders import execute_limit_order, execute_market_order, execute_stop_limit_order
 from bot.validators import validate_order_inputs
 
 # Initialise logging before anything else
@@ -32,6 +32,7 @@ def _print_request_summary(
     order_type: str,
     quantity: float,
     price: float | None,
+    stop_price: float | None = None,
 ) -> None:
     lines = [
         "=" * 40,
@@ -42,8 +43,10 @@ def _print_request_summary(
         f"Type:         {order_type}",
         f"Quantity:     {quantity}",
     ]
+    if stop_price is not None:
+        lines.append(f"Stop Price:   {stop_price}")
     if price is not None:
-        lines.append(f"Price:        {price}")
+        lines.append(f"Limit Price:  {price}")
     lines.append("=" * 40)
     print("\n".join(lines))
 
@@ -71,9 +74,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--type",
         dest="order_type",
         required=True,
-        choices=["MARKET", "LIMIT"],
+        choices=["MARKET", "LIMIT", "STOP"],
         metavar="TYPE",
-        help="Order type: MARKET or LIMIT.",
+        help="Order type: MARKET, LIMIT, or STOP (Stop-Limit).",
     )
     parser.add_argument(
         "--quantity",
@@ -87,7 +90,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         metavar="PRICE",
-        help="Limit price (required for LIMIT orders).",
+        help="Limit price (required for LIMIT and STOP orders).",
+    )
+    parser.add_argument(
+        "--stop-price",
+        dest="stop_price",
+        type=float,
+        default=None,
+        metavar="STOP_PRICE",
+        help="Trigger price (required for STOP orders).",
     )
     return parser
 
@@ -112,18 +123,19 @@ def main(argv: list[str] | None = None) -> int:
     order_type: str = args.order_type.upper()
     quantity: float = args.quantity
     price: float | None = args.price
+    stop_price: float | None = args.stop_price
 
     # ------------------------------------------------------------------ #
     # Validate inputs                                                       #
     # ------------------------------------------------------------------ #
     try:
-        validate_order_inputs(symbol, side, order_type, quantity, price)
+        validate_order_inputs(symbol, side, order_type, quantity, price, stop_price)
     except ValueError as exc:
         logger.error("Validation error: %s", exc)
         print(f"\n[ERROR] {exc}\n", file=sys.stderr)
         return 1
 
-    _print_request_summary(symbol, side, order_type, quantity, price)
+    _print_request_summary(symbol, side, order_type, quantity, price, stop_price)
     print("\nPlacing order...\n")
 
     # ------------------------------------------------------------------ #
@@ -155,8 +167,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if order_type == "MARKET":
             result = execute_market_order(client, symbol, side, quantity)
-        else:
+        elif order_type == "LIMIT":
             result = execute_limit_order(client, symbol, side, quantity, price)  # type: ignore[arg-type]
+        else:  # STOP
+            result = execute_stop_limit_order(client, symbol, side, quantity, price, stop_price)  # type: ignore[arg-type]
     except BinanceAPIError as exc:
         _handle_api_error(exc)
         return 1
@@ -181,6 +195,11 @@ def _handle_api_error(exc: BinanceAPIError) -> None:
         -1100: "Illegal characters in parameter. Check your inputs.",
         -1102: "A mandatory parameter is missing.",
         -2011: "Unknown order. The order may not exist.",
+        -4164: (
+            "Order notional too small (minimum 100 USDT). "
+            "Increase --quantity or, for a LIMIT/STOP order, increase --price."
+        ),
+        -1110: "Order type not supported for this symbol on the testnet.",
         401: "Authentication failed. Check your API key and secret.",
     }
     user_msg = friendly.get(exc.code, f"API error {exc.code}: {exc.message}")

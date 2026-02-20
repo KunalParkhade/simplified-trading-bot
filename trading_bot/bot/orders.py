@@ -29,6 +29,8 @@ class OrderResult:
     avg_price: float
     timestamp: datetime
 
+    stop_price: float = 0.0
+
     def __str__(self) -> str:
         time_str = self.timestamp.strftime("%Y-%m-%d %H:%M:%S")
         lines = [
@@ -39,19 +41,26 @@ class OrderResult:
             f"Status:       {self.status}",
             f"Executed Qty: {self.executed_qty}",
             f"Avg Price:    {self.avg_price:.2f} USDT",
+        ]
+        if self.stop_price:
+            lines.append(f"Stop Price:   {self.stop_price:.2f} USDT")
+        lines += [
             f"Time:         {time_str}",
             "=" * 40,
         ]
         return "\n".join(lines)
 
 
-def _parse_response(raw: dict[str, Any], order_type: str) -> OrderResult:
+def _parse_response(
+    raw: dict[str, Any], order_type: str, stop_price: float = 0.0
+) -> OrderResult:
     """
     Convert a raw Binance API order response into an :class:`OrderResult`.
 
     Args:
         raw: Raw JSON dict returned by the Binance API.
-        order_type: ``MARKET`` or ``LIMIT`` (used as fallback if absent from response).
+        order_type: ``MARKET``, ``LIMIT``, or ``STOP``.
+        stop_price: Trigger price for STOP orders (0.0 otherwise).
 
     Returns:
         Parsed :class:`OrderResult`.
@@ -62,7 +71,7 @@ def _parse_response(raw: dict[str, Any], order_type: str) -> OrderResult:
     status: str = raw.get("status", "")
     executed_qty: float = float(raw.get("executedQty", 0))
 
-    # avgPrice is present for MARKET fills; use price for LIMIT orders
+    # avgPrice is present for MARKET fills; use price for LIMIT/STOP orders
     avg_price_raw = raw.get("avgPrice") or raw.get("price") or "0"
     avg_price: float = float(avg_price_raw)
 
@@ -81,6 +90,7 @@ def _parse_response(raw: dict[str, Any], order_type: str) -> OrderResult:
         status=status,
         executed_qty=executed_qty,
         avg_price=avg_price,
+        stop_price=stop_price,
         timestamp=timestamp,
     )
 
@@ -160,6 +170,55 @@ def execute_limit_order(
         result.order_id,
         result.status,
         result.executed_qty,
+        price,
+    )
+    return result
+
+
+def execute_stop_limit_order(
+    client: BinanceClient,
+    symbol: str,
+    side: str,
+    quantity: float,
+    price: float,
+    stop_price: float,
+) -> OrderResult:
+    """
+    Execute a Stop-Limit (``STOP``) order via the Binance Futures Testnet API.
+
+    The order sits in the book until ``stop_price`` is reached; a LIMIT order
+    at ``price`` is then placed automatically.
+
+    Args:
+        client: Authenticated :class:`~bot.client.BinanceClient` instance.
+        symbol: Trading pair (e.g. ``BTCUSDT``).
+        side: ``BUY`` or ``SELL``.
+        quantity: Quantity to trade.
+        price: Limit price executed once the stop is triggered.
+        stop_price: Trigger price that activates the limit order.
+
+    Returns:
+        :class:`OrderResult` with order details.
+
+    Raises:
+        :class:`~bot.client.BinanceAPIError`: On API-level failures.
+        :class:`requests.exceptions.RequestException`: On network failures.
+    """
+    logger.info(
+        "Executing STOP order | symbol=%s side=%s quantity=%s price=%s stopPrice=%s",
+        symbol,
+        side,
+        quantity,
+        price,
+        stop_price,
+    )
+    raw = client.place_stop_limit_order(symbol, side, quantity, price, stop_price)
+    result = _parse_response(raw, "STOP", stop_price=stop_price)
+    logger.info(
+        "STOP order placed | order_id=%s status=%s stop_price=%s limit_price=%s",
+        result.order_id,
+        result.status,
+        stop_price,
         price,
     )
     return result

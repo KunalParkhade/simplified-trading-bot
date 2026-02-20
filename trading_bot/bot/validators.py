@@ -8,7 +8,7 @@ All validator functions return ``None`` on success and raise
 import re
 
 VALID_SIDES = {"BUY", "SELL"}
-VALID_ORDER_TYPES = {"MARKET", "LIMIT"}
+VALID_ORDER_TYPES = {"MARKET", "LIMIT", "STOP"}
 
 # Binance symbol: 2-10 uppercase letters/digits (e.g. BTCUSDT, ETHUSDT)
 _SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,20}$")
@@ -55,12 +55,28 @@ def validate_order_type(order_type: str) -> None:
         order_type: The order type string to validate.
 
     Raises:
-        ValueError: If the order type is not ``MARKET`` or ``LIMIT``.
+        ValueError: If the order type is not ``MARKET``, ``LIMIT``, or ``STOP``.
     """
     if order_type.upper() not in VALID_ORDER_TYPES:
         raise ValueError(
             f"Invalid order type '{order_type}'. "
             f"Must be one of: {', '.join(sorted(VALID_ORDER_TYPES))}."
+        )
+
+
+def validate_stop_price(stop_price: float) -> None:
+    """
+    Validate the stop (trigger) price used for Stop-Limit orders.
+
+    Args:
+        stop_price: The trigger price to validate.
+
+    Raises:
+        ValueError: If the stop price is not a positive number.
+    """
+    if stop_price <= 0:
+        raise ValueError(
+            f"Invalid stop price '{stop_price}'. Stop price must be a positive number."
         )
 
 
@@ -102,6 +118,7 @@ def validate_order_inputs(
     order_type: str,
     quantity: float,
     price: float | None = None,
+    stop_price: float | None = None,
 ) -> None:
     """
     Validate all order inputs in one call.
@@ -109,9 +126,10 @@ def validate_order_inputs(
     Args:
         symbol: Trading pair symbol.
         side: ``BUY`` or ``SELL``.
-        order_type: ``MARKET`` or ``LIMIT``.
+        order_type: ``MARKET``, ``LIMIT``, or ``STOP``.
         quantity: Order quantity.
-        price: Limit price; required when *order_type* is ``LIMIT``.
+        price: Limit price; required when *order_type* is ``LIMIT`` or ``STOP``.
+        stop_price: Trigger price; required when *order_type* is ``STOP``.
 
     Raises:
         ValueError: On the first validation failure encountered.
@@ -125,3 +143,11 @@ def validate_order_inputs(
         if price is None:
             raise ValueError("Price is required for LIMIT orders.")
         validate_price(price)
+
+    if order_type.upper() == "STOP":
+        if price is None:
+            raise ValueError("--price (limit price) is required for STOP orders.")
+        validate_price(price)
+        if stop_price is None:
+            raise ValueError("--stop-price (trigger price) is required for STOP orders.")
+        validate_stop_price(stop_price)
