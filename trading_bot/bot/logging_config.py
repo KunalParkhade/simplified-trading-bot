@@ -54,11 +54,7 @@ def setup_logging(log_level_console: int = logging.INFO) -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
 
-    # Avoid adding duplicate handlers if called more than once
-    if not root_logger.handlers:
-        root_logger.addHandler(console_handler)
-        root_logger.addHandler(file_handler)
-    else:
-        root_logger.handlers.clear()
-        root_logger.addHandler(console_handler)
-        root_logger.addHandler(file_handler)
+    # Clear any existing handlers to avoid duplicates if called more than once
+    root_logger.handlers.clear()
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
