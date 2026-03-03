@@ -61,4 +61,4 @@ plugins = ["pydantic.mypy"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "--cov=app --cov-report=term-missing --cov-report=html"
+addopts = "--cov=app --cov-report=term-missing -v"
