@@ -1,13 +1,15 @@
 """Integration tests for POST /api/v1/orders/ and GET /api/v1/orders/{id}."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.core.exceptions import BinanceAPIError, OrderNotFoundError
-from app.dependencies import get_binance_client
+from app.db.models import Order
+from app.dependencies import get_binance_client, get_db_session
 from app.main import create_app
 from httpx import ASGITransport, AsyncClient
+from datetime import datetime, timezone
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +283,13 @@ class TestMissingCredentials:
 
         _app = create_app()
         empty_settings = Settings(binance_api_key="", binance_api_secret="")
+        mock_session = AsyncMock()
+        mock_session.add = MagicMock()
+        mock_session.commit = AsyncMock()
+        mock_session.refresh = AsyncMock()
+        mock_session.execute = AsyncMock()
         _app.dependency_overrides[get_settings] = lambda: empty_settings
+        _app.dependency_overrides[get_db_session] = lambda: mock_session
 
         async with AsyncClient(
             transport=ASGITransport(app=_app),
@@ -293,3 +301,135 @@ class TestMissingCredentials:
             )
         assert resp.status_code == 503
         assert "credentials" in resp.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/orders/  —  list endpoint
+# ---------------------------------------------------------------------------
+
+
+def _make_db_order(**overrides) -> Order:
+    """Build an ``Order`` ORM instance (not persisted) for mocking results."""
+    defaults = dict(
+        id=1,
+        order_id=100001,
+        symbol="BTCUSDT",
+        side="BUY",
+        order_type="MARKET",
+        status="FILLED",
+        executed_qty=0.001,
+        avg_price=50000.0,
+        stop_price=0.0,
+        timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+    )
+    defaults.update(overrides)
+    obj = Order.__new__(Order)
+    obj.__dict__.update(defaults)
+    return obj
+
+
+class TestListOrders:
+    """Tests for GET /api/v1/orders/ with a mocked DB session."""
+
+    def _make_client_with_repo_mock(self, mock_binance, mock_db_session, list_result):
+        """Return (app, session overrides) wiring up both BinanceClient and repo."""
+        from sqlalchemy.engine.result import MappingResult
+        from unittest.mock import patch
+
+        _app = create_app()
+        _app.dependency_overrides[get_binance_client] = lambda: mock_binance
+        _app.dependency_overrides[get_db_session] = lambda: mock_db_session
+        return _app
+
+    async def test_list_orders_returns_200(self, api_client, mock_db_session):
+        # list_all returns empty list via scalars().all() — patch at repo level
+        from app.db import repository as repo_mod
+        from unittest.mock import patch, AsyncMock as AM
+
+        async def fake_list_all(self, **kwargs):
+            return []
+
+        with patch.object(repo_mod.OrderRepository, "list_all", fake_list_all):
+            resp = await api_client.get("/api/v1/orders/")
+        assert resp.status_code == 200
+
+    async def test_list_orders_response_shape(self, api_client, mock_db_session):
+        from app.db import repository as repo_mod
+        from unittest.mock import patch
+
+        async def fake_list_all(self, **kwargs):
+            return []
+
+        with patch.object(repo_mod.OrderRepository, "list_all", fake_list_all):
+            data = (await api_client.get("/api/v1/orders/")).json()
+
+        assert "total" in data
+        assert "limit" in data
+        assert "offset" in data
+        assert "items" in data
+        assert isinstance(data["items"], list)
+
+    async def test_list_orders_returns_orders(self, api_client, mock_db_session):
+        from app.db import repository as repo_mod
+        from unittest.mock import patch
+
+        orders = [_make_db_order(id=i, order_id=100000 + i) for i in range(1, 4)]
+
+        async def fake_list_all(self, **kwargs):
+            return orders
+
+        with patch.object(repo_mod.OrderRepository, "list_all", fake_list_all):
+            data = (await api_client.get("/api/v1/orders/")).json()
+
+        assert data["total"] == 3
+        assert len(data["items"]) == 3
+
+    async def test_list_orders_symbol_filter_calls_list_by_symbol(self, api_client, mock_db_session):
+        from app.db import repository as repo_mod
+        from unittest.mock import patch
+
+        called_with = {}
+
+        async def fake_list_by_symbol(self, symbol, **kwargs):
+            called_with["symbol"] = symbol
+            return []
+
+        with patch.object(repo_mod.OrderRepository, "list_by_symbol", fake_list_by_symbol):
+            resp = await api_client.get("/api/v1/orders/?symbol=ETHUSDT")
+
+        assert resp.status_code == 200
+        assert called_with.get("symbol") == "ETHUSDT"
+
+    async def test_list_orders_default_pagination(self, api_client, mock_db_session):
+        from app.db import repository as repo_mod
+        from unittest.mock import patch
+
+        async def fake_list_all(self, **kwargs):
+            return []
+
+        with patch.object(repo_mod.OrderRepository, "list_all", fake_list_all):
+            data = (await api_client.get("/api/v1/orders/")).json()
+
+        assert data["limit"] == 50
+        assert data["offset"] == 0
+
+    async def test_list_orders_custom_pagination(self, api_client, mock_db_session):
+        from app.db import repository as repo_mod
+        from unittest.mock import patch
+
+        async def fake_list_all(self, **kwargs):
+            return []
+
+        with patch.object(repo_mod.OrderRepository, "list_all", fake_list_all):
+            data = (await api_client.get("/api/v1/orders/?limit=10&offset=5")).json()
+
+        assert data["limit"] == 10
+        assert data["offset"] == 5
+
+    async def test_list_orders_limit_too_large_returns_422(self, api_client):
+        resp = await api_client.get("/api/v1/orders/?limit=999")
+        assert resp.status_code == 422
+
+    async def test_list_orders_negative_offset_returns_422(self, api_client):
+        resp = await api_client.get("/api/v1/orders/?offset=-1")
+        assert resp.status_code == 422
