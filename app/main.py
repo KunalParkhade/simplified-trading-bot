@@ -6,9 +6,9 @@ Entry point for the trading bot REST API.  Start with::
 
 The ``lifespan`` context manager handles startup / shutdown:
 
-* **Startup** — creates a single ``httpx.AsyncClient`` stored in
-  ``app.state.http_client`` for connection-pool reuse across all requests.
-* **Shutdown** — gracefully closes the HTTP client.
+* **Startup** — creates a shared ``httpx.AsyncClient`` and initialises the
+  async SQLAlchemy engine + session factory stored in ``app.state``.
+* **Shutdown** — gracefully closes both the HTTP client and the DB engine.
 """
 
 import logging
@@ -19,10 +19,12 @@ from typing import AsyncGenerator
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.api.v1.router import api_v1_router
 from app.config import Settings, get_settings
 from app.core.handlers import register_exception_handlers
+from app.db.base import Base, build_engine, build_session_factory
 
 logger = logging.getLogger(__name__)
 
@@ -37,28 +39,40 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage application-level resources across the process lifetime."""
     settings: Settings = get_settings()
 
-    # Configure root logging based on settings
+    # Configure root logging
     logging.basicConfig(
         level=settings.log_level.upper(),
         format="[%(asctime)s] %(levelname)s %(name)s — %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Create a single shared async HTTP client (connection pooling)
+    # --- Shared async HTTP client (Binance API calls) ---
     http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(10.0, connect=5.0),
     )
     app.state.http_client = http_client
+
+    # --- Async DB engine + session factory ---
+    engine: AsyncEngine = build_engine(settings.database_url)
+    app.state.db_engine = engine
+    app.state.db_session_factory = build_session_factory(engine)
+
+    # Create all tables (idempotent; Alembic used for prod migrations)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     logger.info(
-        "Startup complete | app=%s version=%s",
+        "Startup complete | app=%s version=%s db=%s",
         settings.app_name,
         settings.app_version,
+        settings.database_url,
     )
 
     yield  # ← application runs here
 
     await http_client.aclose()
-    logger.info("HTTP client closed — shutdown complete.")
+    await engine.dispose()
+    logger.info("Resources released — shutdown complete.")
 
 
 # ---------------------------------------------------------------------------

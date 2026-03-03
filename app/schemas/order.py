@@ -75,3 +75,12 @@ class OrderResponse(BaseModel):
     avg_price: float
     stop_price: float = 0.0
     timestamp: datetime
+
+
+class OrderListResponse(BaseModel):
+    """Paginated list of persisted orders."""
+
+    total: int = Field(..., description="Total number of orders matching the filter")
+    limit: int = Field(..., description="Page size used for this response")
+    offset: int = Field(..., description="Number of records skipped")
+    items: list[OrderResponse] = Field(..., description="Orders for this page")

@@ -2,8 +2,9 @@
 
 Endpoints
 ---------
-POST  /api/v1/orders/          Place a new MARKET, LIMIT, or STOP order.
-GET   /api/v1/orders/{order_id} Query an existing order by ID.
+POST  /api/v1/orders/           Place a new MARKET, LIMIT, or STOP order.
+GET   /api/v1/orders/           List persisted orders (paginated, optional symbol filter).
+GET   /api/v1/orders/{order_id} Query an existing order by Binance orderId.
 """
 
 import logging
@@ -13,8 +14,9 @@ from typing import Any
 from fastapi import APIRouter, Query
 
 from app.core.exceptions import OrderValidationError
-from app.dependencies import BinanceClientDep
-from app.schemas.order import OrderResponse, OrderType, PlaceOrderRequest
+from app.db.repository import OrderRepository
+from app.dependencies import BinanceClientDep, DBSessionDep
+from app.schemas.order import OrderListResponse, OrderResponse, OrderType, PlaceOrderRequest
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -72,6 +74,7 @@ def _parse_order_response(
 async def place_order(
     body: PlaceOrderRequest,
     client: BinanceClientDep,
+    session: DBSessionDep,
 ) -> OrderResponse:
     logger.info(
         "Place order request | symbol=%s side=%s type=%s qty=%s",
@@ -83,7 +86,7 @@ async def place_order(
             raw = await client.place_market_order(
                 body.symbol, body.side.value, body.quantity
             )
-            return _parse_order_response(raw, "MARKET")
+            result = _parse_order_response(raw, "MARKET")
 
         case OrderType.LIMIT:
             if body.price is None:
@@ -91,7 +94,7 @@ async def place_order(
             raw = await client.place_limit_order(
                 body.symbol, body.side.value, body.quantity, body.price
             )
-            return _parse_order_response(raw, "LIMIT")
+            result = _parse_order_response(raw, "LIMIT")
 
         case OrderType.STOP:
             if body.price is None or body.stop_price is None:
@@ -101,12 +104,42 @@ async def place_order(
             raw = await client.place_stop_limit_order(
                 body.symbol, body.side.value, body.quantity, body.price, body.stop_price
             )
-            return _parse_order_response(raw, "STOP", stop_price=body.stop_price)
+            result = _parse_order_response(raw, "STOP", stop_price=body.stop_price)
 
         case _:  # pragma: no cover — guarded by schema enum
             raise OrderValidationError(
                 f"Unsupported order type: {body.order_type.value!r}"
             )
+
+    await OrderRepository(session).create(result)
+    logger.info("Order persisted | order_id=%s symbol=%s", result.order_id, result.symbol)
+    return result
+
+
+@router.get(
+    "/",
+    response_model=OrderListResponse,
+    summary="List persisted orders",
+    description=(
+        "Return a paginated list of orders that have been placed through this API "
+        "and persisted in the local database.  \n\n"
+        "Use the optional `symbol` filter to narrow results to a specific trading pair."
+    ),
+)
+async def list_orders(
+    session: DBSessionDep,
+    symbol: str | None = Query(None, description="Filter by trading pair, e.g. BTCUSDT"),
+    limit: int = Query(50, ge=1, le=200, description="Max records to return"),
+    offset: int = Query(0, ge=0, description="Number of records to skip"),
+) -> OrderListResponse:
+    repo = OrderRepository(session)
+    if symbol:
+        rows = await repo.list_by_symbol(symbol.upper(), limit=limit, offset=offset)
+    else:
+        rows = await repo.list_all(limit=limit, offset=offset)
+    items = [OrderResponse.model_validate(row) for row in rows]
+    logger.info("List orders | symbol=%s limit=%s offset=%s returned=%s", symbol, limit, offset, len(items))
+    return OrderListResponse(total=len(items), limit=limit, offset=offset, items=items)
 
 
 @router.get(

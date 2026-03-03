@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------
+    # Database
+    # ------------------------------------------------------------------
+    # SQLite for development/test, PostgreSQL for production.
+    # e.g. sqlite+aiosqlite:///./trading_bot.db
+    #      postgresql+asyncpg://user:pass@localhost:5432/trading_bot
+    database_url: str = "sqlite+aiosqlite:///./trading_bot.db"
+
+    # ------------------------------------------------------------------
     # Binance
     # ------------------------------------------------------------------
     binance_api_key: str = ""

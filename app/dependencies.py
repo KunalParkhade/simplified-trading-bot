@@ -1,18 +1,20 @@
 """FastAPI dependency providers.
 
-Import the ``Annotated`` aliases (``SettingsDep``, ``BinanceClientDep``) in
-route handlers to get fully-typed, injected dependencies via ``Depends()``.
+Import the ``Annotated`` aliases in route handlers to get fully-typed,
+injected dependencies via ``Depends()``.
 
 Example::
 
     @router.post("/orders")
-    async def place_order(body: ..., client: BinanceClientDep) -> ...:
+    async def place_order(body: ..., client: BinanceClientDep, session: DBSessionDep) -> ...:
         ...
 """
 
+from collections.abc import AsyncGenerator
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.services.binance_client import BinanceClient
@@ -53,3 +55,22 @@ def get_binance_client(request: Request, settings: SettingsDep) -> BinanceClient
 
 
 BinanceClientDep = Annotated[BinanceClient, Depends(get_binance_client)]
+
+
+# ---------------------------------------------------------------------------
+# Database session
+# ---------------------------------------------------------------------------
+
+async def get_db_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
+    """
+    Yield an :class:`AsyncSession` from the session factory stored in
+    ``app.state.db_session_factory`` (initialised during the app lifespan).
+
+    The session is automatically closed after the request completes.
+    Rollback on exception is handled by SQLAlchemy's context manager.
+    """
+    async with request.app.state.db_session_factory() as session:
+        yield session
+
+
+DBSessionDep = Annotated[AsyncSession, Depends(get_db_session)]

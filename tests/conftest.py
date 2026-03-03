@@ -1,13 +1,15 @@
-"""Shared pytest fixtures for Phase 1 test suite.
+"""Shared pytest fixtures for the trading-bot test suite.
 
 Strategy
 --------
-- Unit tests use direct imports and `respx` for httpx mocking.
-- Integration tests use ``httpx.ASGITransport`` to drive the FastAPI app
-  entirely in-process (no real network calls, no real Binance API needed).
-- The ``get_binance_client`` dependency is overridden in integration tests
-  with an ``AsyncMock`` so all routes are exercised without touching the
-  real Binance API.
+- Unit tests use direct imports and ``respx`` / ``AsyncMock`` for mocking.
+- Integration tests drive the FastAPI app via ``httpx.ASGITransport`` — no
+  real network calls and no real Binance API.
+- ``get_binance_client`` is overridden with an ``AsyncMock``.
+- ``get_db_session`` is overridden with an ``AsyncMock`` whose ``add`` and
+  ``commit`` methods are no-ops, keeping integration tests free of a real DB.
+- Repository unit tests (``tests/unit/test_repository.py``) build their own
+  in-memory SQLite engine so they test real SQL behaviour.
 """
 
 from typing import AsyncGenerator
@@ -17,7 +19,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.dependencies import get_binance_client
+from app.dependencies import get_binance_client, get_db_session
 from app.main import create_app
 
 # ---------------------------------------------------------------------------
@@ -80,16 +82,36 @@ def mock_binance() -> AsyncMock:
     return mock
 
 
+@pytest.fixture
+def mock_db_session() -> AsyncMock:
+    """
+    Lightweight mock of an ``AsyncSession``.
+
+    Used by integration tests to suppress real DB calls while still allowing
+    the route handlers to call ``repo.create()``.
+    """
+    session = AsyncMock()
+    session.add = MagicMock()           # synchronous in SQLAlchemy
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+    session.execute = AsyncMock()
+    return session
+
+
 @pytest_asyncio.fixture
-async def api_client(mock_binance: AsyncMock) -> AsyncGenerator[AsyncClient, None]:
+async def api_client(
+    mock_binance: AsyncMock,
+    mock_db_session: AsyncMock,
+) -> AsyncGenerator[AsyncClient, None]:
     """
     Async HTTP test client wired to the FastAPI app via ASGITransport.
 
-    The ``get_binance_client`` dependency is overridden to inject
-    ``mock_binance``, so no real Binance API calls are made.
+    Both ``get_binance_client`` and ``get_db_session`` are overridden so
+    no real API calls or DB writes are made during integration tests.
     """
     _app = create_app()
     _app.dependency_overrides[get_binance_client] = lambda: mock_binance
+    _app.dependency_overrides[get_db_session] = lambda: mock_db_session
 
     async with AsyncClient(
         transport=ASGITransport(app=_app),
